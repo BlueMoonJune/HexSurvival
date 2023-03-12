@@ -1,0 +1,408 @@
+local palette = {}
+palette[colors.black] = 0x1F1411
+palette[colors.gray] = 0x241916
+palette[colors.orange] = 0xFF9E63
+palette[colors.red] = 0xE86545
+palette[colors.white] = 0x5A4E48
+palette[colors.lightGray] = 0x362821
+
+local monitor = peripheral.wrap("top")
+monitor.setTextScale(1)
+
+for k, v in pairs(palette) do
+    monitor.setPaletteColor(k, v)
+end
+
+monitor.setBackgroundColor(colors.black)
+monitor.setTextColor(colors.orange)
+monitor.clear()
+
+local input = peripheral.wrap("minecraft:barrel_0")
+local output = peripheral.wrap("minecraft:barrel_1")
+
+local chests = {}
+for _, value in ipairs(peripheral.getNames()) do
+    if string.sub(value, 1, string.len("minecraft:chest")) == "minecraft:chest" then
+        local chest = peripheral.wrap(value)
+        if chest ~= input and chest ~= output then
+            table.insert(chests, peripheral.wrap(value))
+        end
+    end
+end
+
+local items = {}
+
+local selectedItemKey = ""
+
+local function scan()
+    items = {}
+    for _, chest in ipairs(chests) do
+        for slot, item in ipairs(chest.list()) do
+            local key = item.name
+            if item.nbt then
+                key = key..item.nbt
+            end
+            if items[key] then
+                items[key].count = items[key].count + item.count
+                table.insert(items[key].slots, {chest=chest, slot=slot, count=item.count})
+            else
+                items[key] = item
+                items[key].displayName = chest.getItemDetail(slot).displayName
+                items[key].limit = chest.getItemLimit(slot)
+                items[key].slots = {{chest=chest, slot=slot, count=item.count}}
+            end
+        end
+    end
+end
+
+local function outputItem(key)
+    if output.list()[1] then
+        return
+    end
+    local item = items[key]
+    if not item then return end
+    local amount = item.slots[1].chest.pushItems(peripheral.getName(output), item.slots[1].slot)
+    item.slots[1].count = item.slots[1].count - amount
+    if item.slots[1].count <= 0 then
+        table.remove(item.slots, 1)
+    end
+    item.count = item.count - amount
+    if item.count <= 0 then
+        items[key] = nil
+    end
+end
+
+local function inputItems()
+    for slot, item in ipairs(input.list()) do
+        local count = item.count
+        local key = item.name
+        if item.nbt then
+            key = key..item.nbt
+        end
+        while count > 0 do
+            --[[
+            if key == selectedItemKey then
+                count = count - input.pushItems(peripheral.getName(output), slot)
+            end
+            if count <= 0 then
+                break
+            end
+            ]]--
+
+            if items[key] then
+                local targitem = items[key]
+                for _, val in ipairs(targitem.slots) do
+                    local amount = input.pushItems(peripheral.getName(val.chest), slot, 4096, val.slot)
+                    count = count - amount
+                    val.count = val.count + amount
+                    targitem.count = targitem.count + amount
+                    if count <= 0 then
+                        break
+                    end
+                end
+            end
+            if count <= 0 then
+                break
+            end
+            for _, chest in ipairs(chests) do
+                local chestList = chest.list()
+                for tslot = 1, chest.size(), 1 do
+                    if not chestList[tslot] then
+                        local amount = input.pushItems(peripheral.getName(chest), slot, 4096, tslot)
+                        if amount > 0 then
+                            count = count - amount
+                            if items[key] then
+                                items[key].count = items[key].count + amount
+                                table.insert(items[key].slots, {chest=chest, slot=tslot, count=amount})
+                            else
+                                items[key] = item
+                                items[key].displayName = chest.getItemDetail(tslot).displayName
+                                items[key].limit = chest.getItemLimit(tslot)
+                                items[key].slots = {{chest=chest, slot=tslot, count=amount}}
+                            end
+                            if count <= 0 then
+                                break
+                            end
+                        end
+                    end
+                end
+                if count <= 0 then
+                    break
+                end
+            end
+        end
+    end
+end
+
+local function genScrollBar(value, page, max, length, fg, bg)
+    local start = value / max * length
+    local ending = (value + page) / max * length
+    local chars = "\x1E"
+    local fgs = bg
+    local bgs = fg
+    for i = 1, length do
+        if i < math.floor(start) or i > math.ceil(ending) then
+            chars = chars.."\x80"
+            bgs = bgs..bg
+            fgs = fgs..fg
+        elseif i > math.ceil(start) or i < math.floor(ending) then
+            chars = chars.."\x80"
+            bgs = bgs..fg
+            fgs = fgs..bg
+        else
+            chars = chars.."X"
+            bgs = bgs.."15"
+            fgs = fgs.."0"
+        end
+    end
+    local chars = chars.."\x1F"
+    local fgs = fgs..bg
+    local bgs = bgs..fg
+    return chars, bgs, fgs
+end
+
+local function getEvents()
+    os.queueEvent("endEvent")
+    local events = {}
+    local event = table.pack(os.pullEvent())
+    while (event[1] ~= "endEvent") do
+        table.insert(events, event)
+        event = table.pack(os.pullEvent())
+    end
+    return events
+end
+
+monitor.clear()
+
+monitor.setCursorPos(1, 1)
+monitor.write("Scanning...")
+
+scan()
+
+local cycleCount = 0
+
+local scrollPos = 0
+
+local clickX, clickY
+
+local function manageItems()
+    while true do
+        inputItems()
+        outputItem(selectedItemKey)
+    end
+end
+
+local win = window
+local window = win.create(monitor, 1, 1, monitor.getSize())
+local w, h = term.getSize()
+local searchbar = win.create(term.current(), 4, h/2-1, w-6, 3)
+searchbar.setBackgroundColor(colors.lightGray)
+searchbar.clear()
+searchbar.blit("\x96"..string.rep("\x83", w-8).."\x89", string.rep("0", w-6), string.rep("8", w-6))
+searchbar.setCursorPos(1, 2)
+searchbar.blit("\x95\x15"..string.rep(" ", w-9).."\x95", string.rep("0", w-7).."8", "88"..string.rep("7", w-10).."87")
+searchbar.setCursorPos(1, 3)
+searchbar.blit("\x85"..string.rep("\x8F", w-8).."\x9A", "0"..string.rep("8", w-8).."7", "8"..string.rep("7", w-8).."8")
+
+local function alphabetical(a, b)
+    if not items[a].displayName then return true end
+    if not items[b].displayName then return false end
+    return items[a].displayName < items[b].displayName
+end
+local function quantity(a, b)
+    local ia = items[a]
+    local ib = items[b]
+    if ia.count > ib.count then
+        return false
+    elseif ia.count < ib.count then
+        return true
+    else
+        return alphabetical(a, b)
+    end
+end
+local function mod(a, b)
+    return a < b;
+end
+
+local sortModes = {
+    {str = "ABC", func = alphabetical},
+    {str = "COUNT", func = quantity},
+    {str = "MOD", func = mod}
+}
+local sortModeCount = 0
+for _, _ in ipairs(sortModes) do
+    sortModeCount = sortModeCount + 1
+end
+
+local sortModeIndex = 1
+local sortModeDisplayTimer = 0
+
+local reverseSort = false
+
+local searchTerm = ""
+
+local function UI()
+    local lastTime = os.clock()
+    while true do
+        local time = os.clock()
+        local delta = time - lastTime
+        lastTime = time
+
+        if sortModeDisplayTimer - delta > 0 then
+            sortModeDisplayTimer = sortModeDisplayTimer - delta
+        else
+            sortModeDisplayTimer = 0
+        end
+
+        window.setVisible(false)
+        local w, h = window.getSize()
+
+        cycleCount = cycleCount + 1
+        window.setCursorPos(1, 1)
+        for i = 1, h do
+            window.setTextColor(colors.gray)
+            window.setBackgroundColor(colors.black)
+            window.setCursorPos(1, i)
+            window.write(string.rep("\127", w))
+        end
+
+        local itemKeys = {}
+        local i = 1
+        local len = 0
+        for key, item in pairs(items) do
+            if item.displayName and string.find(string.lower(item.displayName), string.lower(searchTerm), 0, true) then
+                len = len+1
+                table.insert(itemKeys, key)
+            end
+        end
+        table.sort(itemKeys, sortModes[sortModeIndex].func)
+        if reverseSort then
+            for i, _ in ipairs(itemKeys) do
+                table.insert(itemKeys, i, table.remove(itemKeys, len))
+            end
+        end
+
+        for _, key in pairs(itemKeys) do
+            if i > scrollPos and i <= scrollPos + h then
+                local item = items[key]
+                window.setCursorPos(1, i-scrollPos)
+                if i%2==0 then
+                    window.setTextColor(colors.orange)
+                else
+                    window.setTextColor(colors.red)
+                end
+                local str
+                if not item.displayName then
+                    str = key.." x"..item.count
+                else
+                    str = item.displayName.." x"..item.count
+                end
+                if string.len(str) > w-2 then
+                    window.write(string.sub(str, 1, w-3).."\xbb")
+                else
+                    window.write(string.sub(str, 1, string.len(str)))
+                end
+            end
+            i = i + 1
+        end
+
+
+        for _, event in ipairs(getEvents()) do
+            if event[1] == "monitor_touch" and event[2] == peripheral.getName(monitor) then
+                if event[3] == w - 1 and event[4] == 1 then
+                    if scrollPos > 0 then scrollPos = scrollPos - 1 end
+                elseif event[3] == w - 1 and event[4] == h then
+                    if scrollPos + h < i then scrollPos = scrollPos + 1 end
+                elseif event[3] == w - 1 then
+                    scrollPos = math.floor((event[4]-1) / (h-2) * i - h / 2)
+                    scrollPos = math.min(scrollPos, i - h)
+                    scrollPos = math.max(scrollPos, 0)
+                elseif event[3] == w and event[4] == 1 then
+                    scan()
+                elseif event[3] == w and event[4] == 2 then
+                    sortModeIndex = sortModeIndex % sortModeCount + 1
+                    sortModeDisplayTimer = 1
+                elseif event[3] == w and event[4] == 3 then
+                    reverseSort = not reverseSort
+                elseif event[3] == w and event[4] == h then
+                    selectedItemKey = ""
+                elseif event[3] < w-1 then
+                    selectedItemKey = itemKeys[event[4] + scrollPos]
+                end
+            end
+
+            if event[1] == "char" then
+                searchTerm = searchTerm..event[2]
+            end
+
+            if event[1] == "key" then
+                if event[2] == keys.backspace then
+                    local len = string.len(searchTerm)
+                    if len > 1 then
+                        searchTerm = string.sub(searchTerm, 1, len-1)
+                    else
+                        searchTerm = ""
+                    end
+                end
+            end
+        end
+
+
+        local chars, fgs, bgs = genScrollBar(scrollPos, h-1, i, h-2, "E", "1")
+        for i = 1, h do
+            if i == 1 or i == h then
+                window.setTextColor(colors.red)
+                window.setBackgroundColor(colors.orange)
+            else
+                window.setTextColor(colors.orange)
+                window.setBackgroundColor(colors.red)
+            end
+            local char = string.sub(chars, i, i)
+            local fg = string.sub(fgs, i, i)
+            local bg = string.sub(bgs, i, i)
+            window.setCursorPos(w-1, i)
+            window.blit(char, fg, bg)
+            window.blit("\x97","8","0")
+        end
+        window.setCursorPos(w, 1)
+        window.blit("@","E","0")
+        window.setCursorPos(w, 2)
+        window.blit("\x7F","E","0")
+
+        window.setCursorPos(w, 3)
+        if reverseSort then
+            window.blit("\x18","E","0")
+        else
+            window.blit("\x19","E","0")
+        end
+
+        window.setCursorPos(w, h)
+        window.blit("X","E","0")
+
+        if sortModeDisplayTimer > 0 then
+            local sortModeStr = sortModes[sortModeIndex].str
+            window.setCursorPos(w-string.len(sortModeStr)-1, 2)
+            window.setBackgroundColor(colors.gray)
+            window.setTextColor(colors.orange)
+            window.write(" "..sortModeStr)
+        end
+        window.setTextColor(colors.orange)
+        window.setBackgroundColor(colors.white)
+        window.setCursorPos(1, h)
+        window.write(string.rep(" ", w-2))
+        window.setCursorPos(1, h)
+        window.write("\x15 "..searchTerm)
+        window.setVisible(true)
+
+        searchbar.setVisible(false)
+        searchbar.setCursorPos(3, 2)
+        searchbar.setTextColor(colors.white)
+        searchbar.setBackgroundColor(colors.gray)
+        searchbar.write(string.rep(" ", searchbar.getSize()-4))
+        searchbar.setCursorPos(3, 2)
+        searchbar.write(" "..searchTerm)
+        searchbar.setVisible(true)
+    end
+end
+
+parallel.waitForAll(UI, manageItems)
